@@ -1,3 +1,4 @@
+import html
 import os
 import re
 import requests
@@ -63,7 +64,7 @@ class TelegramNotifier:
         if desc and len(desc) > 300:
             desc = desc[:300].rsplit(' ', 1)[0] + "..."
 
-        desc_block = f"\n<i>{desc}</i>" if desc else ""
+        desc_block = f"\n<i>{html.escape(desc)}</i>" if desc else ""
 
         raw_url = project.get('url', '')
         if is_valid_url(raw_url):
@@ -73,10 +74,10 @@ class TelegramNotifier:
             logger.warning(f"Invalid URL for grant '{project.get('title')}': '{raw_url}'")
 
         message = (
-            f"{emoji} <b>New Institutional Grant Alert (CSR / Govt / FCRA) — {source}</b>\n\n"
-            f"📋 <b>Grant Opportunity:</b> {project.get('title', 'N/A')}\n"
-            f"🏢 <b>Donor / Foundation:</b> {project.get('company', 'See listing')}\n"
-            f"📍 <b>Location:</b> {location}\n"
+            f"{emoji} <b>New Institutional Grant Alert (CSR / Govt / FCRA) — {html.escape(source)}</b>\n\n"
+            f"📋 <b>Grant Opportunity:</b> {html.escape(project.get('title', 'N/A'))}\n"
+            f"🏢 <b>Donor / Foundation:</b> {html.escape(project.get('company', 'See listing'))}\n"
+            f"📍 <b>Location:</b> {html.escape(location)}\n"
             f"{desc_block}\n\n"
             f"{apply_button}"
         )
