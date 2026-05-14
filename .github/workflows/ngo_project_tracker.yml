@@ -1,0 +1,47 @@
+name: NGO Project Tracker
+
+on:
+  schedule:
+    # Runs twice daily: 00:40 and 12:40 UTC = 06:10 AM and 06:10 PM IST
+    - cron: '40 0,12 * * *'
+  workflow_dispatch: # Run manually from GitHub Actions tab
+
+jobs:
+  run-ngo-project-tracker:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Run NGO Project Tracker
+        env:
+          NGO_PROJECT_TELEGRAM_BOT_TOKEN: ${{ secrets.NGO_PROJECT_TELEGRAM_BOT_TOKEN }}
+          NGO_PROJECT_TELEGRAM_CHAT_ID: ${{ secrets.NGO_PROJECT_TELEGRAM_CHAT_ID }}
+        run: python main.py
+
+      - name: Commit and push updated seen_projects.json
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add seen_projects.json tracker.log
+
+          if git diff --staged --quiet; then
+            echo "No new project opportunities found. Nothing to commit."
+          else
+            git commit -m "🤖 Auto-update: NGO project tracker run $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
