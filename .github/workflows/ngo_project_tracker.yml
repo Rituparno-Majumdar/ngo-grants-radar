@@ -37,7 +37,7 @@ jobs:
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add seen_projects.json tracker.log
+          git add seen_projects.json
 
           if git diff --staged --quiet; then
             echo "No new project opportunities found. Nothing to commit."
