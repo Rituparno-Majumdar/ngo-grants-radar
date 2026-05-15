@@ -42,6 +42,9 @@ class BaseScraper:
             'DNT': '1',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
+            'Sec-Ch-Ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
         })
 
     def fetch_projects(self):
@@ -100,7 +103,7 @@ class NGOBOXScraper(BaseScraper):
 class DevNetJobsIndiaScraper(BaseScraper):
     def fetch_projects(self):
         grants = []
-        url = "http://www.devnetjobsindia.org/rfp_assignments.aspx"
+        url = "https://www.devnetjobsindia.org/rfp_assignments.aspx"
         try:
             response = self.session.get(url, timeout=15)
             response.raise_for_status()
