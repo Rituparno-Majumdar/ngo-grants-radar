@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import time
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -72,10 +73,12 @@ def main():
                 logger.info(f"  🆕 New project / RFP: {project.get('title')} [{project.get('source')}]")
 
                 success = notifier.send_project_alert(project)
-
+                
                 if success:
                     seen_projects.add(project_id)
                     new_projects_found += 1
+                    # Small delay to prevent Telegram rate limiting
+                    time.sleep(1)
                 else:
                     logger.error(f"  ❌ Failed to notify for: {project_id}")
             else:
