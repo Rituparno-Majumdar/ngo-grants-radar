@@ -26,9 +26,9 @@ def is_valid_url(url: str) -> bool:
 
 
 SOURCE_EMOJI = {
-    "LinkedIn": "🔗",
-    "Indeed":   "🔍",
-    "NGOBOX":   "📦",
+    "NGOBOX":          "📦",
+    "FundsForNGOs":    "💰",
+    "ReliefWeb":       "🇺🇳",
     "DevNetJobsIndia": "🇮🇳",
 }
 

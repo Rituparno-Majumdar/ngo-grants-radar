@@ -4,19 +4,22 @@ I built this to track institutional funding opportunities without checking multi
 
 ## What I Track
 
-- CSR grants and project funding calls in India
-- Government tenders relevant to the development sector
-- FCRA-compliant foreign funding opportunities
-- RFPs and consultancy calls from NGO networks
+I track **open grant calls from institutional funders** — organizations that provide funding to NGOs for running projects. This includes:
+
+- **CSR funders**: Corporate foundations and company CSR arms announcing grant programmes
+- **Government grants**: Central and state government schemes open for NGO applications
+- **FCRA / foreign funding**: International donors with India-specific open calls (USAID, GIZ, UN agencies, foundations)
+- **RFPs and tenders**: Requests for proposals from development organisations seeking implementing NGO partners
+- **Challenge funds**: Competitive grant rounds from philanthropy networks
 
 ## Sources
 
 | Platform | Type | Focus |
 |---|---|---|
-| **NGOBOX** | Web scrape | India grant announcements |
-| **DevNetJobsIndia** | Web scrape | RFPs and assignments |
-| **LinkedIn** | Web scrape | CSR grant and project calls |
-| **Indeed** | Web scrape | Development sector tenders |
+| **NGOBOX** | Web scrape | India grant announcements from CSR, government, and FCRA funders |
+| **FundsForNGOs** | Web scrape | Global and India-specific open grant calls for NGOs |
+| **ReliefWeb** | REST API (UN OCHA) | Humanitarian and development funding opportunities in India |
+| **DevNetJobsIndia** | Web scrape | RFPs, tenders, and assignments in the development sector |
 
 ## Architecture
 

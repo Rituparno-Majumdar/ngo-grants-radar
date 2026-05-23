@@ -1,287 +1,337 @@
 import requests
 from bs4 import BeautifulSoup
-import re
-import os
 import logging
 import time
 import random
-from urllib.parse import quote_plus
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
-# --- Keyword Configuration Strictly for Full-Time Institutional NGO Grants (CSR / Govt / FCRA) ---
+# Keywords that indicate a genuine grant/funding call (not a job listing)
 CORE_TERMS = [
-    "grant", "csr grant", "fcra", "government grant", "govt grant",
-    "grant-in-aid", "call for grant proposals", "nonprofit grant", "ngo grant",
-    "funding opportunity", "grant application", "grant announcement", "grant funding",
-    "institutional grant", "donor funding", "grant fund", "philanthropic grant",
-    "challenge fund", "innovation grant", "community grant"
+    "grant", "call for proposals", "cfp", "rfp", "request for proposals",
+    "funding opportunity", "grant announcement", "grant application",
+    "call for applications", "call for submissions", "call for projects",
+    "grant fund", "challenge fund", "innovation grant", "community grant",
+    "csr grant", "fcra", "institutional grant", "donor funding",
+    "expressions of interest", "eoi", "call for tenders",
+    "philanthropic grant", "social impact fund", "development fund",
+    "nonprofit grant", "ngo grant", "grant-in-aid"
 ]
 
+# Terms that indicate a job listing or irrelevant content
 EXCLUDE_TERMS = [
-    "job", "hiring", "recruitment", "vacancy", "career", "full-time job",
-    "resume", "cv", "interview", "salary", "project manager", "project coordinator",
-    "project officer", "program manager", "consultant editor", "facilitator",
-    "data entry", "mobilization executive", "case worker", "teacher", "accountant",
-    "react developer", "software engineer", "backend engineer", "devops",
-    "machine learning engineer", "data engineer", "cybersecurity", "cloud architect",
-    "game developer", "senior software engineer", "full stack", "oracle", "ebs",
-    "erp", "sap", "it project manager", "software project manager", "construction tender",
-    "civil tender", "bpo", "call center", "vendor", "bgv agency", "audit firm"
+    "job opening", "we are hiring", "recruitment", "vacancy",
+    "apply for the position", "years of experience required",
+    "salary", "resume", "curriculum vitae", "job description",
+    "construction tender", "civil tender", "bpo", "call center",
+    "react developer", "software engineer", "devops", "machine learning engineer",
+    "erp", "sap", "oracle", "full stack developer", "backend engineer"
 ]
+
+BROWSER_HEADERS = {
+    'User-Agent': (
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/124.0.0.0 Safari/537.36'
+    ),
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+}
 
 
 class BaseScraper:
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Ch-Ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-        })
+        self.session.headers.update(BROWSER_HEADERS)
 
     def fetch_projects(self):
-        """Must return a list of dicts: id, title, company, url, source, description, location"""
         raise NotImplementedError
 
-    def matches_grant_criteria(self, title="", description="", location=""):
-        combined = f"{title} {description} {location}".lower()
+    def matches_grant_criteria(self, title="", description=""):
+        combined = f"{title} {description}".lower()
         has_core = any(term in combined for term in CORE_TERMS)
         is_excluded = any(ex in combined for ex in EXCLUDE_TERMS)
         return has_core and not is_excluded
 
 
-# ─── Scraper 1: NGOBOX Grant Scraper ─────────────────────────────────────────
+# ─── Scraper 1: NGOBOX ───────────────────────────────────────────────────────
+# Scrapes the grant announcement listing page on NGOBOX.org.
+# This is a dedicated India-facing grant aggregator — high signal.
 class NGOBOXScraper(BaseScraper):
+    URL = "https://ngobox.org/grant_announcement_listing.php"
+
     def fetch_projects(self):
         grants = []
-        url = "https://ngobox.org/grant_announcement_listing.php"
         try:
-            response = self.session.get(url, timeout=15)
+            response = self.session.get(self.URL, timeout=15)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
             seen_urls = set()
             for a in soup.find_all("a", href=True):
                 href = a['href']
-                if "full_grant_announcement_" in href and href not in seen_urls:
-                    seen_urls.add(href)
-                    title = a.text.strip()
-                    if not title:
-                        continue
+                if "full_grant_announcement_" not in href or href in seen_urls:
+                    continue
+                seen_urls.add(href)
 
-                    grant_url = f"https://ngobox.org/{href}" if not href.startswith('http') else href
-                    grant_id = href.split('_')[-1]
+                title = a.text.strip()
+                if not title:
+                    continue
 
-                    parts = title.split('-')
-                    donor = parts[-1].strip() if len(parts) > 1 else "Institutional Donor / Foundation"
+                grant_url = urljoin("https://ngobox.org/", href)
+                # ID is the numeric suffix after the last underscore
+                grant_id = href.rsplit('_', 1)[-1]
 
-                    grants.append({
-                        "id": f"ngobox_grant_{grant_id}",
-                        "title": title,
-                        "company": donor,
-                        "url": grant_url,
-                        "source": "NGOBOX",
-                        "description": "View official Grant Announcement on NGOBOX for funding guidelines, eligibility (CSR/Govt/FCRA), and submission timeline.",
-                        "location": "India / Global"
-                    })
+                # Try to extract donor name from title (pattern: "Title - Donor Name")
+                parts = title.split(' - ')
+                donor = parts[-1].strip() if len(parts) > 1 else "See grant listing"
+
+                grants.append({
+                    "id": f"ngobox_{grant_id}",
+                    "title": title,
+                    "company": donor,
+                    "url": grant_url,
+                    "source": "NGOBOX",
+                    "description": "View full grant announcement for eligibility, funding guidelines, and application deadline.",
+                    "location": "India / Global",
+                })
         except Exception as e:
-            logger.error(f"[NGOBOX Grants] Error fetching grant announcements: {e}")
+            logger.error(f"[NGOBOX] Error: {e}")
 
-        logger.info(f"[NGOBOX Grants] Found {len(grants)} institutional grant opportunities.")
+        logger.info(f"[NGOBOX] Found {len(grants)} grant opportunities.")
         return grants
 
 
-# ─── Scraper 2: DevNetJobsIndia Grant Scraper ────────────────────────────────
-class DevNetJobsIndiaScraper(BaseScraper):
+# ─── Scraper 2: FundsForNGOs ──────────────────────────────────────────────────
+# Scrapes fundsforngos.org — a dedicated grant aggregator with an India section.
+# Each article covers one open grant call with donor name, theme, and deadline.
+class FundsForNGOsScraper(BaseScraper):
+    PAGES = [
+        "https://www.fundsforngos.org/category/india-2/",
+        "https://www.fundsforngos.org/latest-funds-for-ngos/",
+    ]
+
     def fetch_projects(self):
         grants = []
-        url = "https://www.devnetjobsindia.org/rfp_assignments.aspx"
+        seen_ids = set()
+
+        for page_url in self.PAGES:
+            try:
+                response = self.session.get(page_url, timeout=15)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text, 'html.parser')
+
+                # WordPress archive: articles with h2.entry-title containing the link
+                articles = soup.find_all('article')
+                if not articles:
+                    # Fallback: look for h2 entry titles directly
+                    titles = soup.find_all('h2', class_='entry-title')
+                    for h2 in titles:
+                        a = h2.find('a', href=True)
+                        if a:
+                            articles.append(a)
+
+                for article in articles:
+                    # Handle both <article> tags and <a> fallback
+                    if article.name == 'article':
+                        a = article.find('h2', class_='entry-title')
+                        if a:
+                            a = a.find('a', href=True)
+                        if not a:
+                            a = article.find('a', class_='entry-title-link')
+                        if not a:
+                            continue
+                    else:
+                        a = article  # already an <a> tag from fallback
+
+                    title = a.text.strip()
+                    url = a.get('href', '')
+                    if not title or not url:
+                        continue
+
+                    # Use the slug from the URL as a stable ID
+                    slug = url.rstrip('/').rsplit('/', 1)[-1]
+                    if slug in seen_ids:
+                        continue
+                    seen_ids.add(slug)
+
+                    if not self.matches_grant_criteria(title):
+                        continue
+
+                    # Try to get excerpt/description from the article
+                    desc = ""
+                    if article.name == 'article':
+                        excerpt = article.find(class_='entry-summary') or article.find('p')
+                        if excerpt:
+                            desc = excerpt.text.strip()[:300]
+
+                    grants.append({
+                        "id": f"fundsforngos_{slug}",
+                        "title": title,
+                        "company": "See grant listing",
+                        "url": url,
+                        "source": "FundsForNGOs",
+                        "description": desc or "View full grant details including donor, eligibility, and deadline.",
+                        "location": "India / Global",
+                    })
+
+                time.sleep(random.uniform(1, 2))
+
+            except Exception as e:
+                logger.error(f"[FundsForNGOs] Error fetching {page_url}: {e}")
+
+        logger.info(f"[FundsForNGOs] Found {len(grants)} grant opportunities.")
+        return grants
+
+
+# ─── Scraper 3: ReliefWeb ─────────────────────────────────────────────────────
+# Uses the ReliefWeb public API (UN OCHA). No auth required.
+# Filters for India-relevant opportunities and applies keyword matching.
+class ReliefWebScraper(BaseScraper):
+    API_URL = "https://api.reliefweb.int/v1/jobs"
+    PARAMS = {
+        "appname": "ngo-grants-rfp-tracker",
+        "filter[operator]": "AND",
+        "filter[conditions][0][field]": "country.iso3",
+        "filter[conditions][0][value]": "IND",
+        "limit": 50,
+        "sort[]": "date:desc",
+        "fields[include][]": ["title", "url", "date.created", "source.name", "body"],
+    }
+
+    def fetch_projects(self):
+        grants = []
         try:
-            response = self.session.get(url, timeout=15)
+            # requests handles list params; pass fields separately
+            params = {
+                "appname": "ngo-grants-rfp-tracker",
+                "filter[operator]": "AND",
+                "filter[conditions][0][field]": "country.iso3",
+                "filter[conditions][0][value]": "IND",
+                "limit": 50,
+                "sort[]": "date:desc",
+            }
+            # fields as repeated param
+            response = self.session.get(
+                self.API_URL,
+                params=params,
+                headers={"Accept": "application/json"},
+                timeout=20,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            for item in data.get("data", []):
+                fields = item.get("fields", {})
+                title = fields.get("title", "").strip()
+                url = fields.get("url", "")
+                sources = fields.get("source", [])
+                donor = sources[0].get("name", "See listing") if sources else "See listing"
+                body = fields.get("body", "")
+                description = body[:300].rsplit(' ', 1)[0] + "..." if body and len(body) > 300 else body
+
+                if not title or not url:
+                    continue
+
+                if not self.matches_grant_criteria(title, description):
+                    continue
+
+                item_id = str(item.get("id", ""))
+                grants.append({
+                    "id": f"reliefweb_{item_id}",
+                    "title": title,
+                    "company": donor,
+                    "url": url,
+                    "source": "ReliefWeb",
+                    "description": description or "View full opportunity on ReliefWeb.",
+                    "location": "India",
+                })
+
+        except Exception as e:
+            logger.error(f"[ReliefWeb] Error: {e}")
+
+        logger.info(f"[ReliefWeb] Found {len(grants)} matching opportunities.")
+        return grants
+
+
+# ─── Scraper 4: DevNetJobsIndia RFP ──────────────────────────────────────────
+# Scrapes the RFP/assignments listing page on DevNetJobsIndia.
+# Note: individual links use ASP.NET postbacks so we link to the main RFP
+# page as the canonical URL and use title + a hash as the stable ID.
+class DevNetRFPScraper(BaseScraper):
+    URL = "https://www.devnetjobsindia.org/rfp_assignments.aspx"
+
+    def fetch_projects(self):
+        grants = []
+        seen_titles = set()
+        try:
+            response = self.session.get(self.URL, timeout=15)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            seen_ids = set()
+            # Try direct links first (jobdescription.aspx pattern)
             for a in soup.find_all("a", href=True):
                 href = a['href']
+                title = a.text.strip()
+                if not title or title in seen_titles:
+                    continue
+
                 if "jobdescription.aspx?job_id=" in href:
-                    title = a.text.strip()
-                    if not title:
-                        continue
+                    job_id = href.split('job_id=')[-1].split('&')[0]
+                    job_url = urljoin("https://www.devnetjobsindia.org/", href)
+                    seen_titles.add(title)
 
-                    job_id = href.split('job_id=')[-1]
-                    if job_id in seen_ids:
-                        continue
-                    seen_ids.add(job_id)
-
-                    grant_url = f"https://devnetjobsindia.org/{href}" if not href.startswith('http') else href
-
-                    if self.matches_grant_criteria(title, "", ""):
+                    if self.matches_grant_criteria(title):
                         grants.append({
-                            "id": f"devnet_grant_{job_id}",
+                            "id": f"devnet_{job_id}",
                             "title": title,
-                            "company": "Development Sector Foundation",
-                            "url": grant_url,
+                            "company": "Development Sector",
+                            "url": job_url,
                             "source": "DevNetJobsIndia",
-                            "description": "View DevNetJobs notice for full grant funding specifications.",
-                            "location": "India"
+                            "description": "View full RFP/assignment details on DevNetJobsIndia.",
+                            "location": "India",
                         })
+
+            # Fallback: extract titles from postback links, link to listing page
+            if not grants:
+                for a in soup.find_all("a", href=True):
+                    href = a['href']
+                    title = a.text.strip()
+                    if not title or title in seen_titles:
+                        continue
+                    if "__doPostBack" not in href:
+                        continue
+
+                    seen_titles.add(title)
+                    if not self.matches_grant_criteria(title):
+                        continue
+
+                    # Use a hash of the title as a stable ID
+                    title_hash = str(abs(hash(title)) % 10**8)
+                    grants.append({
+                        "id": f"devnet_{title_hash}",
+                        "title": title,
+                        "company": "Development Sector",
+                        "url": self.URL,
+                        "source": "DevNetJobsIndia",
+                        "description": "View full RFP details on DevNetJobsIndia RFP page.",
+                        "location": "India",
+                    })
+
         except Exception as e:
-            logger.error(f"[DevNetJobsIndia Grants] Error fetching grants: {e}")
+            logger.error(f"[DevNetJobsIndia] Error: {e}")
 
-        logger.info(f"[DevNetJobsIndia Grants] Found {len(grants)} matching grant opportunities.")
-        return grants
-
-
-# ─── Scraper 3: LinkedIn Grant Scraper ───────────────────────────────────────
-class LinkedInProjectScraper(BaseScraper):
-    SEARCH_QUERIES = [
-        ("csr grant ngo", "India"),
-        ("government grant ngo", "India"),
-        ("fcra grant ngo", "India"),
-        ("grant announcement non profit", "India"),
-        ("call for grant proposals", "India"),
-    ]
-
-    def fetch_projects(self):
-        grants = []
-        seen_ids = set()
-
-        for keywords, location in self.SEARCH_QUERIES:
-            encoded_kw = quote_plus(keywords)
-            encoded_loc = quote_plus(location)
-            url = f"https://www.linkedin.com/jobs/search?keywords={encoded_kw}&location={encoded_loc}&f_TPR=r604800"
-            try:
-                response = self.session.get(url, timeout=15)
-                # Random delay between queries to avoid bot detection
-                time.sleep(random.uniform(2, 4))
-                response.raise_for_status()
-                soup = BeautifulSoup(response.text, 'html.parser')
-
-                cards = soup.find_all('div', class_='base-card')
-                for card in cards:
-                    title_el = card.find('h3', class_='base-search-card__title')
-                    company_el = card.find('h4', class_='base-search-card__subtitle')
-                    link_el = card.find('a', class_='base-card__full-link')
-                    loc_el = card.find('span', class_='job-search-card__location')
-
-                    if not title_el or not link_el:
-                        continue
-
-                    title = title_el.text.strip()
-                    company = company_el.text.strip() if company_el else "Institutional Donor"
-                    grant_url = link_el['href'].split('?')[0]
-                    location_text = loc_el.text.strip() if loc_el else "Unknown"
-                    grant_id = grant_url.split('-')[-1] if '-' in grant_url else grant_url
-
-                    if grant_id in seen_ids:
-                        continue
-
-                    if self.matches_grant_criteria(title, "", location_text):
-                        seen_ids.add(grant_id)
-                        grants.append({
-                            "id": f"linkedin_grant_{grant_id}",
-                            "title": title,
-                            "company": company,
-                            "url": grant_url,
-                            "source": "LinkedIn",
-                            "description": "View LinkedIn announcement for CSR/Govt/FCRA grant submission details.",
-                            "location": location_text
-                        })
-            except Exception as e:
-                logger.error(f"[LinkedIn Grants] Error for '{keywords}': {e}")
-
-        logger.info(f"[LinkedIn Grants] Found {len(grants)} matching grant announcements.")
-        return grants
-
-
-# ─── Scraper 4: Indeed Grant Scraper ─────────────────────────────────────────
-class IndeedProjectScraper(BaseScraper):
-    SEARCH_QUERIES = [
-        ("csr grant ngo", "India"),
-        ("govt grant non profit", "India"),
-        ("fcra grant funding", "India"),
-        ("call for grant proposals", "India"),
-    ]
-
-    def fetch_projects(self):
-        grants = []
-        seen_ids = set()
-
-        # Pre-flight: visit home page to get session cookies
-        try:
-            self.session.get("https://in.indeed.com/", timeout=10)
-            time.sleep(random.uniform(1, 2))
-        except Exception as e:
-            logger.warning(f"[Indeed Grants] Pre-flight failed: {e}")
-
-        for keywords, location in self.SEARCH_QUERIES:
-            encoded_kw = quote_plus(keywords)
-            encoded_loc = quote_plus(location)
-            url = f"https://in.indeed.com/jobs?q={encoded_kw}&l={encoded_loc}&fromage=7"
-            try:
-                # Set Referer to make it look like a search from the home page
-                self.session.headers.update({'Referer': 'https://in.indeed.com/'})
-
-                # Indeed requires clean headers to bypass bot blocks
-                response = self.session.get(url, timeout=15)
-                # Indeed is very sensitive; longer random delay
-                time.sleep(random.uniform(3, 6))
-                response.raise_for_status()
-                soup = BeautifulSoup(response.text, 'html.parser')
-
-                cards = soup.find_all('td', class_='resultContent') or soup.find_all('div', class_='job_seen_beacon')
-                for card in cards:
-                    title_el = card.find('h2', class_='jobTitle') or card.find('span', title=True)
-                    company_el = card.find('span', class_='companyName') or card.find('span', attrs={'data-testid': 'company-name'})
-                    loc_el = card.find('div', class_='companyLocation') or card.find('div', attrs={'data-testid': 'text-location'})
-                    link_el = card.find('a', href=True)
-
-                    if not title_el or not link_el:
-                        continue
-
-                    title = title_el.text.strip()
-                    company = company_el.text.strip() if company_el else "Institutional Donor"
-                    location_text = loc_el.text.strip() if loc_el else "India"
-                    href = link_el['href']
-                    grant_url = f"https://in.indeed.com{href}" if href.startswith('/') else href
-                    
-                    jk_match = re.search(r'jk=([a-f0-9]+)', grant_url)
-                    grant_id = jk_match.group(1) if jk_match else grant_url.split('/')[-1]
-
-                    if grant_id in seen_ids:
-                        continue
-
-                    if self.matches_grant_criteria(title, "", location_text):
-                        seen_ids.add(grant_id)
-                        grants.append({
-                            "id": f"indeed_grant_{grant_id}",
-                            "title": title,
-                            "company": company,
-                            "url": grant_url,
-                            "source": "Indeed",
-                            "description": "View Indeed announcement for full institutional grant funding criteria.",
-                            "location": location_text
-                        })
-            except Exception as e:
-                logger.error(f"[Indeed Grants] Error for '{keywords}': {e}")
-
-        logger.info(f"[Indeed Grants] Found {len(grants)} matching grant announcements.")
+        logger.info(f"[DevNetJobsIndia] Found {len(grants)} matching RFPs.")
         return grants
 
 
 def get_all_scrapers():
     return [
         NGOBOXScraper(),
-        DevNetJobsIndiaScraper(),
-        LinkedInProjectScraper(),
-        IndeedProjectScraper(),
+        FundsForNGOsScraper(),
+        ReliefWebScraper(),
+        DevNetRFPScraper(),
     ]
