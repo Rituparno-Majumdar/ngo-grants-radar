@@ -33,9 +33,17 @@ def get_chat_id():
                     print(f"Your Chat ID is: {chat_id}")
                     print(f"\nUpdating your .env file automatically...")
                     
-                    with open(".env", "a") as f:
-                        f.write(f"\nNGO_PROJECT_TELEGRAM_CHAT_ID={chat_id}\n")
-                    print("✅ .env file updated successfully! You can now run: python main.py")
+                    # Check if chat ID already exists before appending
+                    existing = ""
+                    if os.path.exists(".env"):
+                        with open(".env", "r") as f:
+                            existing = f.read()
+                    if f"NGO_PROJECT_TELEGRAM_CHAT_ID={chat_id}" in existing:
+                        print(f"✅ .env already has the correct Chat ID ({chat_id}). No changes made.")
+                    else:
+                        with open(".env", "a") as f:
+                            f.write(f"\nNGO_PROJECT_TELEGRAM_CHAT_ID={chat_id}\n")
+                        print("✅ .env file updated successfully! You can now run: python main.py")
                 else:
                     print("\nFound updates but no direct messages. Try sending a normal text message to @ngoprojects_bot.")
         else:

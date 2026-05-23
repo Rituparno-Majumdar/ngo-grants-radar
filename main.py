@@ -51,6 +51,7 @@ def main():
 
     new_projects_found = 0
     total_checked = 0
+    scraper_stats = {}
 
     for scraper in scrapers:
         scraper_name = scraper.__class__.__name__
@@ -60,8 +61,10 @@ def main():
             projects = scraper.fetch_projects()
         except Exception as e:
             logger.error(f"Scraper {scraper_name} failed with unhandled exception: {e}")
+            scraper_stats[scraper_name] = {"found": 0, "new": 0, "failed": True}
             continue
 
+        scraper_new = 0
         total_checked += len(projects)
 
         for project in projects:
@@ -73,10 +76,11 @@ def main():
                 logger.info(f"  🆕 New project / RFP: {project.get('title')} [{project.get('source')}]")
 
                 success = notifier.send_project_alert(project)
-                
+
                 if success:
                     seen_projects.add(project_id)
                     new_projects_found += 1
+                    scraper_new += 1
                     # Small delay to prevent Telegram rate limiting
                     time.sleep(1)
                 else:
@@ -84,9 +88,13 @@ def main():
             else:
                 logger.debug(f"  ✅ Already seen: {project_id}")
 
+        scraper_stats[scraper_name] = {"found": len(projects), "new": scraper_new, "failed": False}
+        if len(projects) == 0:
+            logger.warning(f"⚠️ {scraper_name} returned 0 results — may be blocked or broken.")
+
     save_seen_projects(seen_projects)
 
-    notifier.send_summary(new_projects_found, total_checked)
+    notifier.send_summary(new_projects_found, total_checked, scraper_stats)
 
     logger.info("=" * 60)
     logger.info(f"✅ Done. Sent {new_projects_found} new project alerts from {total_checked} listings checked.")

@@ -7,7 +7,7 @@ This automated tracking system monitors top platforms (LinkedIn and Indeed) for 
 1. **Scraper (`scraper.py`)**: Fetches public project listings from LinkedIn and Indeed. Filters opportunities based on development sector keywords (`rfp`, `tender`, `grant`, `consultancy`, `csr project`, `call for proposals`) and excludes irrelevant technical/corporate/construction tenders.
 2. **Notifier (`notifier.py`)**: Formats project alerts with clean HTML typography, source emojis, organization names, locations, and direct application/RFP links.
 3. **Orchestrator (`main.py`)**: Coordinates scraping and notifications, managing `seen_projects.json` to prevent duplicate alerts.
-4. **Automation (`.github/workflows/ngo_project_tracker.yml`)**: Runs automatically at 11:30 AM and 11:30 PM IST (06:00 and 18:00 UTC) every day.
+4. **Automation (`.github/workflows/ngo_project_tracker.yml`)**: Runs automatically at 06:15 AM and 06:15 PM IST (00:45 and 12:45 UTC) every day.
 
 ## Local Setup
 

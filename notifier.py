@@ -1,6 +1,7 @@
 import html
 import os
 import re
+import time
 import requests
 import logging
 from urllib.parse import urlparse
@@ -89,33 +90,49 @@ class TelegramNotifier:
             "disable_web_page_preview": False,
         }
 
-        try:
-            response = requests.post(
-                f"{self.base_url}/sendMessage", json=payload, timeout=15
-            )
-            response.raise_for_status()
-            logger.info(f"✅ Alert sent: {project.get('title')}")
-            return True
-        except requests.exceptions.RequestException as e:
-            logger.error(f"❌ Failed to send Telegram message: {e}")
-            return False
+        for attempt in range(3):
+            try:
+                response = requests.post(
+                    f"{self.base_url}/sendMessage", json=payload, timeout=15
+                )
+                response.raise_for_status()
+                logger.info(f"✅ Alert sent: {project.get('title')}")
+                return True
+            except requests.exceptions.RequestException as e:
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+                else:
+                    logger.error(f"❌ Failed to send Telegram message after 3 attempts: {e}")
+        return False
 
-    def send_summary(self, total_new, total_checked):
+    def send_summary(self, total_new, total_checked, scraper_stats=None):
         """Send a daily summary message (heartbeat)."""
         if not self.bot_token or not self.chat_id:
             return False
+
+        stats_lines = ""
+        if scraper_stats:
+            lines = []
+            for name, s in scraper_stats.items():
+                if s.get("failed"):
+                    lines.append(f"  ❌ {name}: FAILED")
+                elif s["found"] == 0:
+                    lines.append(f"  ⚠️ {name}: 0 results (may be blocked)")
+                else:
+                    lines.append(f"  ✅ {name}: {s['found']} checked, {s['new']} new")
+            stats_lines = "\n" + "\n".join(lines) + "\n"
 
         if total_new == 0:
             message = (
                 "🤖 <b>NGO Project Tracker — Scan Complete</b>\n\n"
                 f"✅ Checked {total_checked} project listings across monitored platforms.\n"
-                "📭 No new RFPs or tenders found this cycle."
+                f"📭 No new RFPs or tenders found this cycle.{stats_lines}"
             )
         else:
             message = (
                 "🤖 <b>NGO Project Tracker — Scan Complete</b>\n\n"
                 f"🆕 <b>{total_new} new project opportunity/RFPs</b> sent above!\n"
-                f"✅ Checked {total_checked} total project listings."
+                f"✅ Checked {total_checked} total project listings.{stats_lines}"
             )
 
         payload = {
