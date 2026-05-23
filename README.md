@@ -1,5 +1,10 @@
 # NGO Grants & RFP Tracker
 
+![GitHub Actions](https://github.com/Rituparno-Majumdar/ngo-grants-radar/actions/workflows/ngo_project_tracker.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.11-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Platform](https://img.shields.io/badge/platform-GitHub%20Actions-lightgrey)
+
 I built this to track institutional funding opportunities without checking multiple platforms manually. It monitors grants, RFPs, tenders, and CSR consultancies across four platforms and sends Telegram alerts twice daily via GitHub Actions.
 
 ## What I Track
