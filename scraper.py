@@ -1,3 +1,4 @@
+import hashlib
 import requests
 from bs4 import BeautifulSoup
 import logging
@@ -189,32 +190,34 @@ class FundsForNGOsScraper(BaseScraper):
 
 # ─── Scraper 3: ReliefWeb ─────────────────────────────────────────────────────
 # Uses the ReliefWeb public API (UN OCHA). No auth required.
-# Filters for India-relevant opportunities and applies keyword matching.
+# Targets "Consultancy" type entries (RFPs, EOIs, ToRs) filtered to India.
+# Note: /v1/jobs covers consultancies/EOIs as well as regular job listings;
+# the type filter below restricts to Consultancy entries which are closer to
+# grant calls and RFPs rather than permanent employment vacancies.
 class ReliefWebScraper(BaseScraper):
     API_URL = "https://api.reliefweb.int/v1/jobs"
-    PARAMS = {
-        "appname": "ngo-grants-rfp-tracker",
-        "filter[operator]": "AND",
-        "filter[conditions][0][field]": "country.iso3",
-        "filter[conditions][0][value]": "IND",
-        "limit": 50,
-        "sort[]": "date:desc",
-        "fields[include][]": ["title", "url", "date.created", "source.name", "body"],
-    }
 
     def fetch_projects(self):
         grants = []
         try:
-            # requests handles list params; pass fields separately
-            params = {
-                "appname": "ngo-grants-rfp-tracker",
-                "filter[operator]": "AND",
-                "filter[conditions][0][field]": "country.iso3",
-                "filter[conditions][0][value]": "IND",
-                "limit": 50,
-                "sort[]": "date:desc",
-            }
-            # fields as repeated param
+            params = [
+                ("appname", "ngo-grants-rfp-tracker"),
+                ("filter[operator]", "AND"),
+                # India filter
+                ("filter[conditions][0][field]", "country.iso3"),
+                ("filter[conditions][0][value]", "IND"),
+                # Consultancy type — excludes regular vacancies, targets RFPs/EOIs/ToRs
+                ("filter[conditions][1][field]", "type.name"),
+                ("filter[conditions][1][value]", "Consultancy"),
+                ("limit", 50),
+                ("sort[]", "date:desc"),
+                # Request relevant fields explicitly
+                ("fields[include][]", "title"),
+                ("fields[include][]", "url"),
+                ("fields[include][]", "source.name"),
+                ("fields[include][]", "body"),
+                ("fields[include][]", "date.created"),
+            ]
             response = self.session.get(
                 self.API_URL,
                 params=params,
@@ -309,8 +312,9 @@ class DevNetRFPScraper(BaseScraper):
                     if not self.matches_grant_criteria(title):
                         continue
 
-                    # Use a hash of the title as a stable ID
-                    title_hash = str(abs(hash(title)) % 10**8)
+                    # Use a deterministic hash of the title as a stable ID
+                    # (hashlib.md5 is stable across Python runs; built-in hash() is not)
+                    title_hash = hashlib.md5(title.encode()).hexdigest()[:8]
                     grants.append({
                         "id": f"devnet_{title_hash}",
                         "title": title,
