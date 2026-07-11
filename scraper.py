@@ -4,6 +4,8 @@ from bs4 import BeautifulSoup
 import logging
 import time
 import random
+import os
+import json
 from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,125 @@ BROWSER_HEADERS = {
 }
 
 
+# ─── Helper Functions for LLM Extraction ──────────────────────────────────────
+
+def extract_clean_text(html_content, base_url=None):
+    """Cleans up raw HTML into formatted text, preserving links as markdown [text](url)."""
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        # Remove elements that contain navigation, scripts, styling, or boilerplate
+        for element in soup(["script", "style", "nav", "footer", "header", "noscript"]):
+            element.extract()
+        
+        # Convert links to [text](url) format to allow Gemini to extract listing URLs
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if base_url:
+                href = urljoin(base_url, href)
+            text = a.get_text().strip()
+            if text:
+                a.replace_with(f" [{text}]({href}) ")
+            else:
+                a.replace_with(f" ({href}) ")
+                
+        text = soup.get_text(separator=' ')
+        # Collapse whitespace and empty lines
+        lines = [line.strip() for line in text.splitlines()]
+        clean_lines = [line for line in lines if line]
+        return '\n'.join(clean_lines)
+    except Exception as e:
+        logger.warning(f"Error cleaning HTML: {e}")
+        return html_content[:50000]
+
+
+def gemini_extract_items(text, schema_type, source_name, base_url=None):
+    """Calls the Gemini API using requests to perform structured item extraction."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        logger.error("GEMINI_API_KEY not found in environment. Fallback failed.")
+        return []
+
+    model = "gemini-2.5-flash"
+    
+    if schema_type == 'grant':
+        prompt = (
+            f"You are a web scraping assistant extracting institutional grant opportunities (CSR, Govt, FCRA, RFPs, funding calls) from the text of a webpage from '{source_name}'.\n"
+            f"Analyze the text below and extract all open grant opportunities/funding calls. Ignore job vacancies or standard construction/civil tenders.\n\n"
+            f"Extract the following fields for each grant opportunity and return them as a JSON list of objects:\n"
+            f"- 'title': The title of the grant or RFP opportunity.\n"
+            f"- 'company': The donor organization or foundation name (if not found, use 'See grant listing' or a reasonable guess from context).\n"
+            f"- 'url': The URL link to the grant detail page (use links found in the text associated with the grant; resolve against '{base_url}' if relative).\n"
+            f"- 'description': A brief summary of eligibility, guidelines, or scope (approx 100-200 characters).\n"
+            f"- 'location': The target location or region (e.g. 'India', 'Global').\n\n"
+            f"Only return a valid JSON list. Do not include markdown code block formatting like ```json ... ```. Just return the raw JSON string starting with [ and ending with ]."
+        )
+    else:
+        prompt = (
+            f"You are a web scraping assistant extracting NGO / development sector / social impact job openings from the text of a webpage from '{source_name}'.\n"
+            f"Analyze the text below and extract all open job vacancies. Filter for relevant roles such as project coordinators, program officers, CSR managers, social work, monitoring & evaluation.\n\n"
+            f"Extract the following fields for each job opening and return them as a JSON list of objects:\n"
+            f"- 'title': The job title.\n"
+            f"- 'company': The organization or company hiring (if not found, use 'Unknown' or a reasonable guess from context).\n"
+            f"- 'location': The job location.\n"
+            f"- 'url': The URL link to apply or view the job detail page (use links found in the text associated with the job; resolve against '{base_url}' if relative).\n"
+            f"- 'description': A brief summary of the role (approx 100-200 characters).\n"
+            f"- 'date_posted': The date posted if visible (otherwise empty string).\n\n"
+            f"Only return a valid JSON list. Do not include markdown code block formatting like ```json ... ```. Just return the raw JSON string starting with [ and ending with ]."
+        )
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": f"{prompt}\n\nWebpage Text:\n\"\"\"\n{text}\n\"\"\""}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json"
+        }
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=30)
+        response.raise_for_status()
+        res_data = response.json()
+        content = res_data['candidates'][0]['content']['parts'][0]['text'].strip()
+        
+        # Strip markdown format blocks if present
+        if content.startswith("```"):
+            lines = content.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines[-1].startswith("```"):
+                lines = lines[:-1]
+            content = "\n".join(lines).strip()
+            
+        items = json.loads(content)
+        if not isinstance(items, list):
+            logger.error("Gemini returned JSON that is not a list.")
+            return []
+        return items
+    except Exception as e:
+        logger.error(f"Failed calling Gemini API or parsing response: {e}")
+        return []
+
+
+def generate_stable_id(prefix, item):
+    """Generates a stable unique ID for an extracted item based on URL or Title."""
+    url = item.get("url", "")
+    title = item.get("title", "")
+    if url and url != "#":
+        unique_str = url.split("?")[0].rstrip("/")
+    else:
+        unique_str = title
+    val_hash = hashlib.md5(unique_str.encode()).hexdigest()[:12]
+    return f"{prefix}_{val_hash}"
+
+
+# ─── Base Scraper Class ───────────────────────────────────────────────────────
+
 class BaseScraper:
     def __init__(self):
         self.session = requests.Session()
@@ -57,15 +178,50 @@ class BaseScraper:
         is_excluded = any(ex in combined for ex in EXCLUDE_TERMS)
         return has_core and not is_excluded
 
+    def llm_fallback(self, response, schema_type, source_name, prefix, base_url=None):
+        """Standard fallback pipeline when HTML parsing yields 0 results or fails."""
+        logger.info(f"[{source_name}] HTML parsing yielded 0 results or failed. Attempting LLM extraction fallback...")
+        try:
+            clean_text = extract_clean_text(response.text, base_url=base_url or response.url)
+            items = gemini_extract_items(clean_text, schema_type, source_name, base_url=base_url or response.url)
+            
+            processed_items = []
+            for item in items:
+                item_id = item.get("id")
+                if not item_id:
+                    item_id = generate_stable_id(prefix, item)
+                
+                item["source"] = source_name
+                title = item.get("title", "")
+                desc = item.get("description", "")
+                loc = item.get("location", "")
+                
+                if self.matches_grant_criteria(title, desc):
+                    processed_items.append({
+                        "id": item_id,
+                        "title": title,
+                        "company": item.get("company", "See grant listing"),
+                        "url": item.get("url", ""),
+                        "source": source_name,
+                        "description": desc or "View listing for guidelines and details.",
+                        "location": loc or "India / Global",
+                    })
+            
+            logger.info(f"[{source_name}] LLM fallback successfully extracted {len(processed_items)} items.")
+            return processed_items
+        except Exception as fallback_err:
+            logger.error(f"[{source_name}] LLM fallback failed: {fallback_err}")
+            return []
+
 
 # ─── Scraper 1: NGOBOX ───────────────────────────────────────────────────────
-# Scrapes the grant announcement listing page on NGOBOX.org.
-# This is a dedicated India-facing grant aggregator — high signal.
+
 class NGOBOXScraper(BaseScraper):
     URL = "https://ngobox.org/grant_announcement_listing.php"
 
     def fetch_projects(self):
         grants = []
+        response = None
         try:
             response = self.session.get(self.URL, timeout=15)
             response.raise_for_status()
@@ -83,10 +239,8 @@ class NGOBOXScraper(BaseScraper):
                     continue
 
                 grant_url = urljoin("https://ngobox.org/", href)
-                # ID is the numeric suffix after the last underscore
                 grant_id = href.rsplit('_', 1)[-1]
 
-                # Try to extract donor name from title (pattern: "Title - Donor Name")
                 parts = title.split(' - ')
                 donor = parts[-1].strip() if len(parts) > 1 else "See grant listing"
 
@@ -102,13 +256,16 @@ class NGOBOXScraper(BaseScraper):
         except Exception as e:
             logger.error(f"[NGOBOX] Error: {e}")
 
+        # Fallback if scraping yielded no results but page loaded successfully
+        if not grants and response is not None and response.status_code == 200:
+            grants = self.llm_fallback(response, 'grant', 'NGOBOX', 'ngobox', base_url="https://ngobox.org/")
+
         logger.info(f"[NGOBOX] Found {len(grants)} grant opportunities.")
         return grants
 
 
 # ─── Scraper 2: FundsForNGOs ──────────────────────────────────────────────────
-# Scrapes fundsforngos.org — a dedicated grant aggregator with an India section.
-# Each article covers one open grant call with donor name, theme, and deadline.
+
 class FundsForNGOsScraper(BaseScraper):
     PAGES = [
         "https://www.fundsforngos.org/category/india-2/",
@@ -120,15 +277,15 @@ class FundsForNGOsScraper(BaseScraper):
         seen_ids = set()
 
         for page_url in self.PAGES:
+            page_grants = []
+            response = None
             try:
                 response = self.session.get(page_url, timeout=15)
                 response.raise_for_status()
                 soup = BeautifulSoup(response.text, 'html.parser')
 
-                # WordPress archive: articles with h2.entry-title containing the link
                 articles = soup.find_all('article')
                 if not articles:
-                    # Fallback: look for h2 entry titles directly
                     titles = soup.find_all('h2', class_='entry-title')
                     for h2 in titles:
                         a = h2.find('a', href=True)
@@ -136,7 +293,6 @@ class FundsForNGOsScraper(BaseScraper):
                             articles.append(a)
 
                 for article in articles:
-                    # Handle both <article> tags and <a> fallback
                     if article.name == 'article':
                         a = article.find('h2', class_='entry-title')
                         if a:
@@ -146,14 +302,13 @@ class FundsForNGOsScraper(BaseScraper):
                         if not a:
                             continue
                     else:
-                        a = article  # already an <a> tag from fallback
+                        a = article
 
                     title = a.text.strip()
                     url = a.get('href', '')
                     if not title or not url:
                         continue
 
-                    # Use the slug from the URL as a stable ID
                     slug = url.rstrip('/').rsplit('/', 1)[-1]
                     if slug in seen_ids:
                         continue
@@ -162,14 +317,13 @@ class FundsForNGOsScraper(BaseScraper):
                     if not self.matches_grant_criteria(title):
                         continue
 
-                    # Try to get excerpt/description from the article
                     desc = ""
                     if article.name == 'article':
                         excerpt = article.find(class_='entry-summary') or article.find('p')
                         if excerpt:
                             desc = excerpt.text.strip()[:300]
 
-                    grants.append({
+                    page_grants.append({
                         "id": f"fundsforngos_{slug}",
                         "title": title,
                         "company": "See grant listing",
@@ -184,16 +338,18 @@ class FundsForNGOsScraper(BaseScraper):
             except Exception as e:
                 logger.error(f"[FundsForNGOs] Error fetching {page_url}: {e}")
 
+            # Fallback if scraping yielded no results but page loaded successfully
+            if not page_grants and response is not None and response.status_code == 200:
+                page_grants = self.llm_fallback(response, 'grant', 'FundsForNGOs', 'fundsforngos')
+
+            grants.extend(page_grants)
+
         logger.info(f"[FundsForNGOs] Found {len(grants)} grant opportunities.")
         return grants
 
 
 # ─── Scraper 3: ReliefWeb ─────────────────────────────────────────────────────
-# Uses the ReliefWeb public API (UN OCHA). No auth required.
-# Targets "Consultancy" type entries (RFPs, EOIs, ToRs) filtered to India.
-# Note: /v1/jobs covers consultancies/EOIs as well as regular job listings;
-# the type filter below restricts to Consultancy entries which are closer to
-# grant calls and RFPs rather than permanent employment vacancies.
+
 class ReliefWebScraper(BaseScraper):
     API_URL = "https://api.reliefweb.int/v1/jobs"
 
@@ -203,15 +359,12 @@ class ReliefWebScraper(BaseScraper):
             params = [
                 ("appname", "ngo-grants-rfp-tracker"),
                 ("filter[operator]", "AND"),
-                # India filter
                 ("filter[conditions][0][field]", "country.iso3"),
                 ("filter[conditions][0][value]", "IND"),
-                # Consultancy type — excludes regular vacancies, targets RFPs/EOIs/ToRs
                 ("filter[conditions][1][field]", "type.name"),
                 ("filter[conditions][1][value]", "Consultancy"),
                 ("limit", 50),
                 ("sort[]", "date:desc"),
-                # Request relevant fields explicitly
                 ("fields[include][]", "title"),
                 ("fields[include][]", "url"),
                 ("fields[include][]", "source.name"),
@@ -261,21 +414,20 @@ class ReliefWebScraper(BaseScraper):
 
 
 # ─── Scraper 4: DevNetJobsIndia RFP ──────────────────────────────────────────
-# Scrapes the RFP/assignments listing page on DevNetJobsIndia.
-# Note: individual links use ASP.NET postbacks so we link to the main RFP
-# page as the canonical URL and use title + a hash as the stable ID.
+
 class DevNetRFPScraper(BaseScraper):
     URL = "https://www.devnetjobsindia.org/rfp_assignments.aspx"
 
     def fetch_projects(self):
         grants = []
         seen_titles = set()
+        response = None
         try:
             response = self.session.get(self.URL, timeout=15)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Try direct links first (jobdescription.aspx pattern)
+            # Try direct links first
             for a in soup.find_all("a", href=True):
                 href = a['href']
                 title = a.text.strip()
@@ -298,7 +450,7 @@ class DevNetRFPScraper(BaseScraper):
                             "location": "India",
                         })
 
-            # Fallback: extract titles from postback links, link to listing page
+            # Fallback within scraper logic if no direct links: doPostBack links
             if not grants:
                 for a in soup.find_all("a", href=True):
                     href = a['href']
@@ -312,8 +464,6 @@ class DevNetRFPScraper(BaseScraper):
                     if not self.matches_grant_criteria(title):
                         continue
 
-                    # Use a deterministic hash of the title as a stable ID
-                    # (hashlib.md5 is stable across Python runs; built-in hash() is not)
                     title_hash = hashlib.md5(title.encode()).hexdigest()[:8]
                     grants.append({
                         "id": f"devnet_{title_hash}",
@@ -327,6 +477,10 @@ class DevNetRFPScraper(BaseScraper):
 
         except Exception as e:
             logger.error(f"[DevNetJobsIndia] Error: {e}")
+
+        # Fallback if scraping yielded no results but page loaded successfully
+        if not grants and response is not None and response.status_code == 200:
+            grants = self.llm_fallback(response, 'grant', 'DevNetJobsIndia', 'devnet', base_url="https://www.devnetjobsindia.org/")
 
         logger.info(f"[DevNetJobsIndia] Found {len(grants)} matching RFPs.")
         return grants
